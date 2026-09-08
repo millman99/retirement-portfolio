@@ -696,6 +696,13 @@ async function loadFromFirestore(uid){
   ]);
   if(!coreSnap.exists()) return null; // 이 uid로 저장된 적 없음 → 신규
   const core=coreSnap.data();
+  // v23 fix(중요): Firestore 오프라인 캐시(IndexedDB)가 예전에 다른 uid의 응답을 들고 있다가
+  // 서버 문서가 삭제된 뒤에도 그 캐시를 먼저 반환하는 경우가 있었다(계정 전환 사고의 실제 원인).
+  // 저장할 때 문서에 uid를 함께 새겨두고, 불러올 때 지금 로그인된 uid와 다르면 신뢰하지 않는다.
+  if(core._ownerUid && core._ownerUid!==uid){
+    console.error('데이터 소유자 불일치 감지 — 캐시된 다른 계정 데이터로 판단해 무시합니다.', {expected:uid, found:core._ownerUid});
+    return null;
+  }
   const chunkMap=txSnap.exists()?(txSnap.data().chunks||{}):{};
   const transactions=Object.keys(chunkMap).sort().flatMap(k=>chunkMap[k]||[]);
   const snapMap=snapSnap.exists()?(snapSnap.data().map||{}):{};
@@ -777,6 +784,7 @@ async function save(){
         accounts: state.accounts||[], meta: state.meta||{},
         curPrices: state.curPrices||{}, tickerNames: state.tickerNames||{},
         _savedAt: state._savedAt,
+        _ownerUid: currentUid, // v23: 저장 시점의 uid를 함께 새겨, 불러올 때 캐시 오염을 감지하는 데 사용
       };
       const txChunks=txToChunks(state.transactions);
       const snapMap=snapsToMap(state.snapshots);
