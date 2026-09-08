@@ -2023,7 +2023,11 @@ function initEvents(){
     }catch(e){ mStat.textContent='업로드 실패: '+e.message; console.error(e); }
   };
   document.getElementById('impBtn').onclick=doImport;
-  document.getElementById('resetBtn').onclick=()=>{if(!confirm('모든 데이터를 삭제하고 초기화합니다. 계속할까요?'))return;state=blank();sched();renderAll();};
+  document.getElementById('resetBtn').onclick=()=>{
+    const who=(window.fb&&window.fb.auth&&window.fb.auth.currentUser&&window.fb.auth.currentUser.email)||'(알 수 없음)';
+    if(!confirm(`현재 로그인 계정: ${who}\n\n이 계정의 모든 데이터를 삭제하고 초기화합니다. 계속할까요?`))return;
+    state=blank();sched();renderAll();
+  };
   document.getElementById('expRefresh').onclick=refreshExport;
   document.getElementById('expCopy').onclick=async()=>{refreshExport();try{await navigator.clipboard.writeText(document.getElementById('expBox').value);alert('복사되었습니다');}catch(e){alert('복사 실패 — 직접 선택해 복사하세요');}};
   document.getElementById('expDl').onclick=()=>{refreshExport();try{const b=new Blob([document.getElementById('expBox').value],{type:'application/json'});const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download='portfo_backup_'+tsStamp()+'.json';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(u);}catch(e){alert('다운로드 미지원 — 텍스트를 복사해 저장하세요');}};
@@ -2372,7 +2376,10 @@ function doImport(){
   const raw=document.getElementById('impBox').value.trim();if(!raw){alert('JSON을 업로드하거나 붙여넣으세요');return;}
   let d;try{d=JSON.parse(raw);}catch(e){alert('JSON 형식 오류');return;}
   if(!d.transactions||!d.accounts){alert('portfo 형식이 아닙니다 (accounts/transactions 필요)');return;}
-  if(!confirm('현재 데이터를 가져온 내용으로 덮어씁니다. 계속할까요?'))return;
+  // v23 fix: 어느 계정에 덮어쓰는지 화면에 명시해 사람이 마지막으로 한 번 더 확인하게 한다.
+  // (계정 전환 직후 화면 갱신이 늦어 다른 계정에 잘못 저장되는 사고를 막기 위한 안전장치)
+  const who=(window.fb&&window.fb.auth&&window.fb.auth.currentUser&&window.fb.auth.currentUser.email)||'(알 수 없음)';
+  if(!confirm(`현재 로그인 계정: ${who}\n\n이 계정의 데이터를 지금 가져온 내용(거래 ${d.transactions.length}건, 계좌 ${d.accounts.length}개)으로 완전히 덮어씁니다.\n\n계정이 맞는지 다시 한번 확인 후 계속하세요.`))return;
   state=migrate(d);
   // 현재가는 top-level curPrices를 직접 사용하므로 별도 시드 불필요
   ensureAcctMeta();
