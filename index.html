@@ -2454,24 +2454,31 @@ function initAuth(){
   };
   document.getElementById('authLogoutBtn').onclick=async()=>{
     await window.fb.signOut(window.fb.auth);
+    // v22 fix: signOut 이후 onAuthStateChanged의 상태 리셋 타이밍에 의존하지 않고,
+    // 페이지를 통째로 새로고침해 모든 전역 상태(캐시, 이벤트 리스너)를 깨끗이 지운다.
+    location.reload();
   };
   [emailEl,pwEl].forEach(el=>el.addEventListener('keydown',e=>{
     if(e.key==='Enter'){ e.preventDefault(); document.getElementById('authLoginBtn').click(); }
   }));
 
   let appBooted=false;
-  let lastUid=null;
   window.fb.onAuthStateChanged(window.fb.auth, async(user)=>{
     if(user){
-      // v21 fix: 계정이 바뀌었는데 이미 한 번 부팅된 상태라면(예: 로그아웃 후 다른 계정으로 로그인)
-      // 메모리에 남은 이전 계정의 state/캐시가 새 계정 화면에 잠깐이라도 섞여 보이는 걸 원천 차단하기
-      // 위해 무조건 새로고침한다. localStorage 폴백도 uid별로 분리했지만(lsKeyFor), 이중 방어.
-      if(appBooted && lastUid && lastUid!==user.uid){ location.reload(); return; }
-      currentUid=user.uid; lastUid=user.uid;
-      showMainApp(user.email);
-      if(!appBooted){ appBooted=true; await initApp(); }
+      // v22 fix: "uid가 바뀐 경우에만 새로고침" 조건이 로그아웃→로그인 흐름에서는 발화하지 않는
+      // 허점이 있었다(로그아웃 시 appBooted가 false로 리셋되어 새로고침 조건 자체가 걸리지 않음).
+      // 그 결과 initApp()이 재실행되며 tickerMasterCache 등 전역 캐시나 이벤트 리스너 중복 문제로
+      // 화면에 이전 계정 흔적이 남을 수 있었다. 예외 두지 말고 "로그인 성공 = 항상 새로고침"으로 단순화.
+      currentUid=user.uid;
+      if(!appBooted){
+        appBooted=true;
+        showMainApp(user.email);
+        await initApp();
+      } else {
+        location.reload();
+      }
     } else {
-      currentUid=null; lastUid=null; appBooted=false;
+      currentUid=null; appBooted=false;
       showAuthScreen();
     }
   });
