@@ -178,7 +178,7 @@
     <button class="btn ghost sm" id="authLogoutBtn">로그아웃</button>
   </div>
   <header class="top">
-    <div><div class="eyebrow">RETIREMENT PORTFOLIO · v17</div><h1>은퇴 자금 관리</h1></div>
+    <div><div class="eyebrow">RETIREMENT PORTFOLIO · 2026-09-08 수정</div><h1>은퇴 자금 관리</h1></div>
     <div class="total"><div class="label">전체 평가금액</div><div class="value num" id="hTotal">-</div><div class="sub num" id="hSub">-</div></div>
   </header>
 
@@ -313,13 +313,25 @@
     <div class="card">
       <h2 id="txFormTitle">거래 입력</h2><div class="sub">매수/매도/입금/출금을 기록하면 보유·평가가 자동 갱신됩니다. 종목은 직접 입력하면 새로 추가됩니다.</div>
       <div class="formline fl-tx">
-        <div><label>유형</label><select id="txType"><option value="buy">매수</option><option value="sell">매도</option><option value="cash_in">입금</option><option value="cash_out">출금</option></select></div>
+        <div><label>유형</label><select id="txType"><option value="buy">매수</option><option value="sell">매도</option><option value="cash_in">입금</option><option value="cash_out">출금</option><option value="adjust">조정</option></select></div>
         <div><label>계좌</label><select id="txAcct"></select></div>
-        <div><label>종목 (입출금은 비움)</label><input id="txTicker" list="tickerList" placeholder="예: TIGER 미국S&P500"><datalist id="tickerList"></datalist></div>
-        <div><label>수량</label><input id="txQty" class="n" type="number" step="1"></div>
+        <div><label>종목 (입출금·예수금조정은 비움)</label><input id="txTicker" list="tickerList" placeholder="예: TIGER 미국S&P500"><datalist id="tickerList"></datalist></div>
+        <div id="txAdjTargetWrap" style="display:none"><label>조정 대상</label><select id="txAdjTarget"><option value="qty">수량</option><option value="eval">평가금액</option><option value="cash">예수금</option></select></div>
+        <div><label id="txQtyLabel">수량</label><input id="txQty" class="n" type="number" step="1"></div>
         <div><label>단가/금액</label><input id="txPrice" class="n comma" type="text"></div>
         <div><label>자산군</label><select id="txCat"><option>해외지수</option><option>해외성장</option><option>해외배당</option><option>해외채권</option><option>국내배당</option><option>국내주식</option><option>현금성 자산</option><option>기타</option></select></div>
         <div style="display:flex;gap:6px;"><button class="btn" id="txAdd">기록</button><button class="btn ghost" id="txCancel" style="display:none">취소</button></div>
+      </div>
+      <div id="txAdjReasonWrap" style="display:none;margin-bottom:12px">
+        <label>조정 사유</label>
+        <select id="txAdjReason" style="max-width:260px">
+          <option value="분배금재투자">분배금 재투자</option>
+          <option value="분할·병합">액면분할·병합</option>
+          <option value="거래누락">거래 기록 누락분 보정</option>
+          <option value="증권사반올림">증권사 원단위 반올림 차이</option>
+          <option value="기타">기타</option>
+        </select>
+        <div class="note">조정은 매수·매도처럼 <b>거래이력에 남습니다</b>(포트폴리오 탭의 "수동수정"과 달리 언제·왜 조정했는지 기록이 보존됩니다). 대상에 따라 "단가/금액" 칸에 <b>변화량(±)</b>을 입력하세요 — 예: 수량이 2주 더 있어야 하면 <code>+2</code>, 예수금이 2,497원 적으면 <code>-2497</code>.</div>
       </div>
       <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;">
         <div class="field" style="max-width:220px;margin-bottom:0"><label>날짜</label><input id="txDate" type="date"></div>
@@ -337,7 +349,7 @@
         <div class="field" style="margin-bottom:0"><label>기간(부터)</label><input id="txFromDate" type="date"></div>
         <div class="field" style="margin-bottom:0"><label>기간(까지)</label><input id="txToDate" type="date"></div>
         <div class="field" style="margin-bottom:0"><label>종목 검색</label><input id="txTickerFilter" placeholder="종목명 일부 입력"></div>
-        <div class="field" style="margin-bottom:0"><label>유형</label><select id="txTypeFilter"><option value="">전체</option><option value="buy">매수</option><option value="sell">매도</option><option value="cash_in">입금</option><option value="cash_out">출금</option></select></div>
+        <div class="field" style="margin-bottom:0"><label>유형</label><select id="txTypeFilter"><option value="">전체</option><option value="buy">매수</option><option value="sell">매도</option><option value="cash_in">입금</option><option value="cash_out">출금</option><option value="adjust">조정</option></select></div>
       </div>
       <button class="btn ghost sm" id="txFilterClear" style="margin-bottom:10px;">필터 초기화</button>
       <div class="scroll"><table id="txTable"><thead><tr>
@@ -790,6 +802,26 @@ function computeRaw(){
     else if(t.type==='cash_out') o.cash-=amt;
     else if(t.type==='buy'){const h=o.hold[t.ticker]||{qty:0,cost:0};h.qty+=Number(t.qty)||0;h.cost+=amt;o.hold[t.ticker]=h;o.cash-=amt;if(t.category)o.catOf[t.ticker]=t.category;}
     else if(t.type==='sell'){const h=o.hold[t.ticker]||{qty:0,cost:0};const avg=h.qty>0?h.cost/h.qty:0;h.qty-=Number(t.qty)||0;h.cost-=avg*(Number(t.qty)||0);if(h.qty<1e-6){h.qty=0;h.cost=0;}o.hold[t.ticker]=h;o.cash+=amt;if(t.category)o.catOf[t.ticker]=t.category;}
+    else if(t.type==='adjust'){
+      // v20: 수기 조정을 거래이력에 남기는 통합 유형. holdOverride(영구 덮어쓰기, 이력 없음)를 대체한다.
+      //  target='qty'  : 수량을 delta만큼 증감 (평단은 유지되도록 원가도 비례 조정)
+      //  target='eval' : 원가를 delta만큼 증감 (현재가는 시장가를 그대로 따름 — "평가금액을 올리고 싶다"는
+      //                  대개 "원가를 잘못 잡았다"는 뜻이라, 원가 조정으로 처리해야 수익률이 왜곡되지 않음)
+      //  target='cash' : 예수금을 delta만큼 증감 (cash_in/out과 동일 효과이나 "조정"으로 분리 기록)
+      const delta=Number(t.delta)||0;
+      if(t.target==='cash'){ o.cash+=delta; }
+      else if(t.ticker){
+        const h=o.hold[t.ticker]||{qty:0,cost:0};
+        if(t.target==='qty'){
+          const avg=h.qty>0?h.cost/h.qty:0;
+          h.qty+=delta; h.cost+=avg*delta; // 평단을 유지한 채 수량만 조정
+        } else if(t.target==='eval'){
+          h.cost+=delta; // 원가를 직접 증감
+        }
+        if(h.qty<1e-6){h.qty=0;h.cost=0;}
+        o.hold[t.ticker]=h;
+      }
+    }
   }
   return accs;
 }
@@ -1359,8 +1391,20 @@ function renderTx(c){
   txs.sort((a,b)=>(b.date||'').localeCompare(a.date||'')||b.id-a.id);
   const totalMatched=txs.length;
   txs=txs.slice(0,80);
-  const tyName={buy:'매수',sell:'매도',cash_in:'입금',cash_out:'출금'};
-  document.querySelector('#txTable tbody').innerHTML=txs.map(t=>`
+  const tyName={buy:'매수',sell:'매도',cash_in:'입금',cash_out:'출금',adjust:'조정'};
+  const adjTargetName={qty:'수량',eval:'평가금액',cash:'예수금'};
+  document.querySelector('#txTable tbody').innerHTML=txs.map(t=>{
+    if(t.type==='adjust'){
+      const d=Number(t.delta)||0;
+      return `<tr${String(t.id)===String(txEditId)?' style="background:var(--gold-s)"':''}><td>${t.date||''}</td><td>${esc(t.account)}</td>
+      <td><span class="pill gold">조정</span></td>
+      <td>${esc(t.ticker||'(예수금)')}<div style="font-size:10.5px;color:var(--ink2)">${esc(adjTargetName[t.target]||t.target)} · ${esc(t.reason||'')}${t.memo?' · 📝 '+esc(t.memo):''}</div></td>
+      <td class="num">${t.target==='qty'?(d>=0?'+':'')+won0(d):''}</td><td></td>
+      <td class="num ${d>=0?'pos':'neg'}">${t.target!=='qty'?(d>=0?'+':'')+won0(d)+'원':''}</td>
+      <td></td><td></td>
+      <td style="white-space:nowrap"><button class="btn ghost sm" data-edit="${t.id}">수정</button> <button class="btn danger sm" data-del="${t.id}">삭제</button></td></tr>`;
+    }
+    return `
     <tr${String(t.id)===String(txEditId)?' style="background:var(--gold-s)"':''}><td>${t.date||''}</td><td>${esc(t.account)}</td>
     <td><span class="pill ${t.type==='buy'?'green':t.type==='sell'?'brick':'blue'}">${tyName[t.type]||t.type}</span></td>
     <td>${esc(t.ticker||'')}${t.memo?`<div style="font-size:10.5px;color:var(--ink2)">📝 ${esc(t.memo)}</div>`:''}</td>
@@ -1368,7 +1412,8 @@ function renderTx(c){
     <td class="num">${won0(t.krwTotal)}원</td>
     <td style="text-align:center">${(t.type==='cash_in'||t.type==='cash_out')?`<input type="checkbox" class="txContribToggle" data-id="${t.id}" ${t.contrib?'checked':''}>`:''}</td>
     <td class="num ${t.realizedPnl!=null?clsSign(t.realizedPnl):''}">${t.realizedPnl!=null?fmtSign(t.realizedPnl):''}</td>
-    <td style="white-space:nowrap"><button class="btn ghost sm" data-edit="${t.id}">수정</button> <button class="btn danger sm" data-del="${t.id}">삭제</button></td></tr>`).join('')
+    <td style="white-space:nowrap"><button class="btn ghost sm" data-edit="${t.id}">수정</button> <button class="btn danger sm" data-del="${t.id}">삭제</button></td></tr>`;
+  }).join('')
     ||'<tr><td colspan="10" style="text-align:center;color:var(--ink2)">조건에 맞는 거래가 없습니다</td></tr>';
   const noteEl=document.getElementById('txListNote');
   if(noteEl)noteEl.textContent=`총 ${totalMatched}건 중 최대 80건 표시 · "수정"을 누르면 위 입력폼에서 고칠 수 있어요.`;
@@ -1387,10 +1432,19 @@ function loadTxEdit(id){
   txEditId=t.id;
   document.getElementById('txType').value=t.type; updateTxForm();
   document.getElementById('txAcct').value=t.account;
-  document.getElementById('txTicker').value=t.ticker||'';
-  document.getElementById('txQty').value=t.qty||'';
-  setCommaVal(document.getElementById('txPrice'),t.price||(t.krwTotal&&!t.qty?t.krwTotal:''));
-  if(t.category)document.getElementById('txCat').value=t.category;
+  if(t.type==='adjust'){
+    document.getElementById('txAdjTarget').value=t.target||'qty';
+    updateTxForm(); // target에 따른 필드 표시 갱신
+    document.getElementById('txTicker').value=t.ticker||'';
+    if(t.target==='qty'){ document.getElementById('txQty').value=t.delta||''; }
+    else { setCommaVal(document.getElementById('txPrice'),t.delta||''); }
+    document.getElementById('txAdjReason').value=t.reason||'기타';
+  } else {
+    document.getElementById('txTicker').value=t.ticker||'';
+    document.getElementById('txQty').value=t.qty||'';
+    setCommaVal(document.getElementById('txPrice'),t.price||(t.krwTotal&&!t.qty?t.krwTotal:''));
+    if(t.category)document.getElementById('txCat').value=t.category;
+  }
   document.getElementById('txDate').value=t.date||'';
   const cb=document.getElementById('txContrib'); if(cb)cb.checked=!!t.contrib;
   document.getElementById('txMemo').value=t.memo||'';
@@ -1901,6 +1955,7 @@ function initEvents(){
   });
   // tx
   document.getElementById('txType').onchange=updateTxForm; updateTxForm();
+  const txAdjT=document.getElementById('txAdjTarget'); if(txAdjT)txAdjT.onchange=updateTxForm;
   document.getElementById('txQty').oninput=updateTxCalc; document.getElementById('txPrice').oninput=updateTxCalc;
   document.getElementById('txAdd').onclick=addTx;
   // 종목명 입력 시 기존 동일 종목의 자산군으로 자동분류 (item 1)
@@ -1970,10 +2025,20 @@ function autoFillTxCat(){
 }
 function updateTxForm(){
   const t=document.getElementById('txType').value; const isCash=t==='cash_in'||t==='cash_out';
-  document.getElementById('txTicker').disabled=isCash;
-  document.getElementById('txQty').disabled=isCash;
-  document.getElementById('txCat').disabled=isCash;
-  document.getElementById('txPrice').previousElementSibling.textContent=isCash?'금액(원)':'단가';
+  const isAdjust=t==='adjust';
+  const atw=document.getElementById('txAdjTargetWrap'), arw=document.getElementById('txAdjReasonWrap');
+  if(atw)atw.style.display=isAdjust?'':'none';
+  if(arw)arw.style.display=isAdjust?'':'none';
+  const adjTarget=isAdjust?document.getElementById('txAdjTarget').value:null;
+  const adjIsCash=isAdjust&&adjTarget==='cash';
+  const adjIsEval=isAdjust&&adjTarget==='eval';
+  document.getElementById('txTicker').disabled=isCash||adjIsCash;
+  document.getElementById('txQty').disabled=isCash||adjIsCash||adjIsEval; // 조정=수량일 때만 수량 입력 사용
+  document.getElementById('txCat').disabled=isCash||isAdjust;
+  const qtyLbl=document.getElementById('txQtyLabel');
+  if(qtyLbl)qtyLbl.textContent=(isAdjust&&adjTarget==='qty')?'수량 변화(±)':'수량';
+  document.getElementById('txPrice').previousElementSibling.textContent=
+    isCash?'금액(원)':(isAdjust?(adjTarget==='qty'?'평단(참고용)':'변화량(±원)'):'단가');
   // 입금일 때만 "납입" 체크박스 노출 (item 7)
   const cw=document.getElementById('txContribWrap');
   if(cw)cw.style.display=(t==='cash_in'||t==='cash_out')?'inline-flex':'none';
@@ -1981,6 +2046,12 @@ function updateTxForm(){
 }
 function updateTxCalc(){
   const t=document.getElementById('txType').value;const q=+document.getElementById('txQty').value||0;const p=numVal(document.getElementById('txPrice'));
+  if(t==='adjust'){
+    const target=document.getElementById('txAdjTarget').value;
+    document.getElementById('txCalc').textContent=
+      target==='qty' ? `수량 ${q>=0?'+':''}${q}주 조정` : `${target==='cash'?'예수금':'평가금액'} ${p>=0?'+':''}${won(p)} 조정`;
+    return;
+  }
   const total=(t==='cash_in'||t==='cash_out')?p:q*p;
   document.getElementById('txCalc').textContent='거래 금액: '+won(total)+(total>=10000000?' ('+wonK(total)+')':'');
 }
@@ -1988,14 +2059,32 @@ function addTx(){
   const type=document.getElementById('txType').value;
   const account=document.getElementById('txAcct').value;
   const isCash=type==='cash_in'||type==='cash_out';
+  const date=document.getElementById('txDate').value||new Date().toISOString().slice(0,10);
+  const memo=document.getElementById('txMemo').value.trim();
+  if(!account){alert('계좌를 선택하세요');return;}
+  if(type==='adjust'){
+    const target=document.getElementById('txAdjTarget').value;
+    const reason=document.getElementById('txAdjReason').value;
+    const ticker=target==='cash'?'':document.getElementById('txTicker').value.trim();
+    if(target!=='cash' && !ticker){alert('조정할 종목을 입력하세요');return;}
+    const delta = target==='qty' ? (+document.getElementById('txQty').value||0) : numVal(document.getElementById('txPrice'));
+    if(!delta){alert('조정 변화량을 입력하세요 (0이 아닌 값)');return;}
+    if(txEditId!=null){
+      const t=(state.transactions||[]).find(x=>String(x.id)===String(txEditId));
+      if(t) Object.assign(t,{type:'adjust',date,account,ticker,target,delta,reason,memo});
+      cancelTxEdit(); sched(); renderAll(); return;
+    }
+    const t={id:uid(), type:'adjust', date, account, ticker, target, delta, reason, memo};
+    state.transactions.push(t);
+    sched(); renderAll();
+    document.getElementById('txQty').value='';document.getElementById('txPrice').value='';document.getElementById('txMemo').value='';
+    return;
+  }
   const ticker=isCash?'':document.getElementById('txTicker').value.trim();
   const qty=isCash?0:(+document.getElementById('txQty').value||0);
   const price=numVal(document.getElementById('txPrice'));
-  const date=document.getElementById('txDate').value||new Date().toISOString().slice(0,10);
   const category=isCash?'':document.getElementById('txCat').value;
   const contrib=(type==='cash_in'||type==='cash_out')&&document.getElementById('txContrib').checked;
-  const memo=document.getElementById('txMemo').value.trim();
-  if(!account){alert('계좌를 선택하세요');return;}
   if(!isCash&&!ticker){alert('종목명을 입력하세요');return;}
   if(!isCash&&qty<=0){alert('수량을 입력하세요');return;}
   const krwTotal=isCash?price:qty*price;
