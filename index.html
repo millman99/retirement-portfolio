@@ -200,7 +200,7 @@
       <div class="card"><div class="kpi"><span class="k">총 평가금액</span><span class="v num" id="dTot" style="color:var(--green-d)">-</span></div><div class="note num" id="dCost"></div></div>
       <div class="card"><div class="kpi"><span class="k" title="총 평가금액 − 납입원금. 목표·실적 탭의 '성과'와 같은 값입니다.">누적 성과</span><span class="v num" id="dPnl">-</span></div><div class="note num" id="dRet"></div></div>
       <div class="card"><div class="kpi"><span class="k">올해 누적 실현손익</span><span class="v num" id="dReal">-</span></div><div class="note">매도로 확정된 금액</div></div>
-      <div class="card"><div class="kpi"><span class="k">예상 은퇴 가능 시점</span><span class="v num" id="dRetire">-</span></div><div class="note">인출 시뮬레이션 기준</div></div>
+      <div class="card"><div class="kpi"><span class="k">예상 연금 고갈 시점</span><span class="v num" id="dRetire">-</span></div><div class="note">인출 시뮬레이션 기준 · "고갈 안 됨"이면 설정한 나이까지 자산이 유지된다는 뜻</div></div>
     </div>
     <div class="card">
       <h2>자산군 비중</h2><div class="sub">현재 평가금액 기준 · 목표 대비 ±5%p 이상이면 리밸런싱 신호 · 항목을 클릭하면 아래로 펼쳐집니다</div>
@@ -239,6 +239,7 @@
       <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
         <button class="btn ghost sm" id="pfSnap">＋ 현재 평가금액으로 스냅샷 저장</button>
         <button class="btn ghost sm" id="pfSnapManual">＋ 수기로 스냅샷 추가</button>
+        <button class="btn" id="closingWizardOpen">🧙 월말 마감 마법사</button>
       </div>
       <div class="scroll"><table id="pfTable"><thead><tr>
         <th>월(YYYY-MM)</th><th>기초금액</th><th>추가투자금액</th><th>당월 손익</th><th>월말평가금액</th><th>납입원금</th><th>수익률</th><th></th>
@@ -526,6 +527,16 @@
   </section>
 </div>
 <div class="savebar" id="savebar">저장됨</div>
+
+<div id="closingWizardOverlay" style="display:none;position:fixed;inset:0;background:rgba(35,40,31,0.55);z-index:200;align-items:center;justify-content:center;padding:16px;">
+  <div class="card" style="max-width:720px;width:100%;max-height:90vh;overflow:auto;margin:0;">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <h2 style="margin:0">🧙 월말 마감 마법사</h2>
+      <button class="btn ghost sm" id="closingWizardClose">✕ 닫기</button>
+    </div>
+    <div id="closingWizardBody"></div>
+  </div>
+</div>
 
 <script>
 const SEED_DATA=null; // v17: 실데이터 분리 (seed-2026-06.json). 코드와 데이터를 분리해 파일 경량화·유출위험 제거
@@ -1862,6 +1873,8 @@ function initEvents(){
     state.snapshots.push({id:Date.now(),ym,savedAt:new Date().toISOString(),evalTotal:Math.round(c.grandEval),total:Math.round(c.grandEval),contribOverride:null,curPrices:Object.assign({},state.meta.prices)});
     sched();renderPerf(compute());alert(ym+' 스냅샷을 저장했습니다.');
   };
+  const cwOpen=document.getElementById('closingWizardOpen'); if(cwOpen)cwOpen.onclick=openClosingWizard;
+  const cwClose=document.getElementById('closingWizardClose'); if(cwClose)cwClose.onclick=closeClosingWizard;
   // 수기 스냅샷 추가 — 월말평가금액만 필수, 추가투자금액은 비워두면 거래내역 자동집계 사용 (item 1, 수정: 누적원금 모델)
   document.getElementById('pfSnapManual').onclick=()=>{
     const ym=prompt('추가할 월을 YYYY-MM 형식으로 입력하세요','2026-01');
@@ -2197,6 +2210,151 @@ function maybeAutoRefreshPrices(){
     refreshPrices(true).catch(()=>{}); // 조용히 실패 허용 — 기존 값 그대로 사용
   }
 }
+/* ---------- v20: 월말 마감 마법사 ----------
+   목적: "월말 잔액 맞추기"에 흩어져 있던 4가지 수단(holdOverride/prices/cash 거래/스냅샷 직접수정)을
+   하나의 절차로 통합. 계좌별 실제 잔액만 입력하면:
+     - 계좌당 10만원 이하 차이는 사람 확인 없이 "반올림 보정" adjust 거래로 자동 생성
+     - 10만원 초과 차이는 원인 후보(미기록 분배금/수량 불일치/가격 오래됨)를 짚어주고 사람이 판단
+   완료 시 조정 거래들을 한꺼번에 커밋하고, 그 결과로 스냅샷도 함께 저장한다.
+*/
+const CLOSING_AUTO_THRESHOLD = 100000; // 계좌당 10만원 이하는 자동 흡수
+let closingWizardState=null; // {step, balances:{계좌:실제잔액}, diffs:[...]}
+
+function openClosingWizard(){
+  closingWizardState={step:1, balances:{}};
+  document.getElementById('closingWizardOverlay').style.display='flex';
+  renderClosingWizard();
+}
+function closeClosingWizard(){
+  document.getElementById('closingWizardOverlay').style.display='none';
+  closingWizardState=null;
+}
+
+function closingWizardStep1(){
+  const c=compute();
+  const accounts=state.accounts||[];
+  return `
+    <div class="note">각 계좌의 <b>오늘 기준 실제 총 평가금액(예수금 포함)</b>을 증권사 앱에서 그대로 옮겨 적으세요. 시스템이 계산한 값과 비교해 차이를 자동으로 처리합니다.</div>
+    <div style="margin-top:10px">
+      ${accounts.map(a=>{
+        const sys=c.accounts.find(x=>x.name===a);
+        const sysTotal=sys?sys.total:0;
+        return `<div class="field" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+          <label style="min-width:140px;margin:0">${esc(a)}</label>
+          <input class="n comma closingBalInput" data-acc="${esc(a)}" placeholder="실제 잔액" style="width:160px" value="${closingWizardState.balances[a]!=null?won0(closingWizardState.balances[a]):''}">
+          <span class="note" style="margin:0">시스템 계산값: ${won0(sysTotal)}원</span>
+        </div>`;
+      }).join('')}
+    </div>
+    <div style="margin-top:14px;display:flex;justify-content:flex-end;gap:8px">
+      <button class="btn" id="closingWizardNext1">다음 — 차이 계산</button>
+    </div>`;
+}
+
+function closingWizardStep2(){
+  const c=compute();
+  const accounts=state.accounts||[];
+  const diffs=accounts.map(a=>{
+    const sys=c.accounts.find(x=>x.name===a);
+    const sysTotal=sys?sys.total:0;
+    const actual=closingWizardState.balances[a];
+    const diff=(actual!=null)?(actual-sysTotal):0;
+    return {account:a, sysTotal, actual, diff, hasInput:actual!=null};
+  }).filter(d=>d.hasInput);
+  closingWizardState.diffs=diffs;
+
+  const autoRows=diffs.filter(d=>Math.abs(d.diff)<=CLOSING_AUTO_THRESHOLD && Math.abs(d.diff)>=1);
+  const bigRows=diffs.filter(d=>Math.abs(d.diff)>CLOSING_AUTO_THRESHOLD);
+  const okRows=diffs.filter(d=>Math.abs(d.diff)<1);
+
+  // 큰 차이가 난 계좌의 원인 후보 진단
+  function diagnose(acc){
+    const hints=[];
+    const recentDist=(state.transactions||[]).filter(t=>t.account===acc && (t.memo||'').includes('분배금') && (t.date||'')>=addMonthsStr(todayStr(),-1));
+    if(!recentDist.length) hints.push('최근 1개월 내 이 계좌의 분배금 기록이 없습니다 — 분배금이 입금됐는데 기록을 놓쳤을 수 있어요.');
+    const stalePrices=Object.entries(state.meta.priceMeta||{}).filter(([tk,pm])=>{
+      const held=c.accounts.find(x=>x.name===acc)?.holdings.some(h=>h.ticker===tk);
+      if(!held) return false;
+      const days=(Date.now()-new Date(pm.at).getTime())/86400000;
+      return days>3 || pm.error;
+    }).map(([tk])=>tk);
+    if(stalePrices.length) hints.push(`가격이 3일 이상 갱신 안 됐거나 조회 실패한 종목: ${stalePrices.join(', ')} — 포트폴리오 탭에서 "현재가 새로고침"을 먼저 눌러보세요.`);
+    hints.push('증권사 앱에서 최근 매매·입출금 내역을 다시 확인해 누락된 거래가 없는지 봐주세요.');
+    return hints;
+  }
+
+  return `
+    <div class="note">임계값(계좌당 ${won0(CLOSING_AUTO_THRESHOLD)}원) 이하 차이는 자동으로 "반올림 보정" 조정을 만듭니다. 그 이상은 원인을 먼저 확인해주세요.</div>
+    ${okRows.length?`<div style="margin-top:10px" class="note" style="color:var(--green-d)">✓ 일치: ${okRows.map(d=>esc(d.account)).join(', ')}</div>`:''}
+    ${autoRows.length?`
+      <h3 style="margin:14px 0 6px">자동 흡수될 조정 (${autoRows.length}건)</h3>
+      <table style="width:100%"><thead><tr><th>계좌</th><th>차이</th></tr></thead><tbody>
+        ${autoRows.map(d=>`<tr><td>${esc(d.account)}</td><td class="num ${d.diff>=0?'pos':'neg'}">${wonKsign(d.diff)}</td></tr>`).join('')}
+      </tbody></table>` : ''}
+    ${bigRows.length?`
+      <h3 style="margin:14px 0 6px">⚠ 확인이 필요한 차이 (${bigRows.length}건)</h3>
+      ${bigRows.map(d=>`
+        <div class="warnbox" style="margin-bottom:8px">
+          <b>${esc(d.account)}</b> — 차이 <span class="${d.diff>=0?'pos':'neg'}">${wonKsign(d.diff)}</span> (시스템 ${won0(d.sysTotal)}원 vs 실제 ${won0(d.actual)}원)
+          <ul style="margin:6px 0 6px 18px;padding:0">${diagnose(d.account).map(h=>`<li style="margin-bottom:3px">${esc(h)}</li>`).join('')}</ul>
+          <label style="display:flex;align-items:center;gap:6px;font-weight:600;font-size:12.5px;cursor:pointer;">
+            <input type="checkbox" class="closingForceAccept" data-acc="${esc(d.account)}" style="width:auto"> 원인을 확인했고, 그대로 예수금 조정으로 반영
+          </label>
+        </div>`).join('')}
+    ` : ''}
+    ${!diffs.length?'<div class="note">입력된 실제 잔액이 없습니다. 이전 단계로 돌아가 입력해주세요.</div>':''}
+    <div style="margin-top:14px;display:flex;justify-content:space-between;gap:8px">
+      <button class="btn ghost" id="closingWizardBack">← 이전</button>
+      <button class="btn" id="closingWizardCommit">${autoRows.length||bigRows.length?'조정 반영하고 스냅샷 저장':'스냅샷만 저장'}</button>
+    </div>`;
+}
+
+function renderClosingWizard(){
+  const body=document.getElementById('closingWizardBody');
+  if(closingWizardState.step===1){
+    body.innerHTML=closingWizardStep1();
+    body.querySelectorAll('.closingBalInput').forEach(attachComma);
+    document.getElementById('closingWizardNext1').onclick=()=>{
+      body.querySelectorAll('.closingBalInput').forEach(inp=>{
+        const v=numVal(inp);
+        if(v>0) closingWizardState.balances[inp.dataset.acc]=v;
+      });
+      closingWizardState.step=2;
+      renderClosingWizard();
+    };
+  } else {
+    body.innerHTML=closingWizardStep2();
+    document.getElementById('closingWizardBack').onclick=()=>{ closingWizardState.step=1; renderClosingWizard(); };
+    document.getElementById('closingWizardCommit').onclick=()=>{
+      const diffs=closingWizardState.diffs||[];
+      const today=todayStr();
+      let created=0;
+      diffs.forEach(d=>{
+        if(Math.abs(d.diff)<1) return;
+        const isAuto=Math.abs(d.diff)<=CLOSING_AUTO_THRESHOLD;
+        const forced=document.querySelector(`.closingForceAccept[data-acc="${CSS.escape(d.account)}"]`)?.checked;
+        if(!isAuto && !forced) return; // 큰 차이인데 확인 체크 안 했으면 건너뜀(스킵, 강제 아님)
+        state.transactions.push({
+          id:uid(), type:'adjust', date:today, account:d.account, ticker:'',
+          target:'cash', delta:d.diff,
+          reason: isAuto?'증권사반올림':'기타',
+          memo: isAuto?'월말 마감 마법사 자동 흡수':'월말 마감 마법사 — 사용자 확인 후 반영'
+        });
+        created++;
+      });
+      sched(); renderAll();
+      closeClosingWizard();
+      if(created>0) alert(`조정 거래 ${created}건이 생성됐습니다. 거래입력 탭에서 "조정" 유형으로 확인할 수 있어요.`);
+      // 스냅샷 저장까지 자연스럽게 이어지도록 기존 스냅샷 저장 버튼을 그대로 눌러준다
+      const snapBtn=document.getElementById('pfSnap'); if(snapBtn) snapBtn.click();
+    };
+  }
+}
+function todayStr(){ return new Date().toISOString().slice(0,10); }
+function addMonthsStr(dateStr, n){
+  const d=new Date(dateStr); d.setMonth(d.getMonth()+n); return d.toISOString().slice(0,10);
+}
+
 function refreshExport(){
   const out={_version:'portfo_v4',_exportedAt:new Date().toISOString(),_memo:`거래${(state.transactions||[]).length}건 · 계좌${(state.accounts||[]).length}개 · 스냅샷${(state.snapshots||[]).length}개`,accounts:state.accounts,transactions:state.transactions,snapshots:state.snapshots,curPrices:state.curPrices||{},tickerNames:state.tickerNames||{},meta:state.meta};
   document.getElementById('expBox').value=JSON.stringify(out,null,2);
